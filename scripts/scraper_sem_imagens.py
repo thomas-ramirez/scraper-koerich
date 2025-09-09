@@ -50,28 +50,32 @@ maps = {
         "Processador": "13",
         "Aspirador": "14",
         "Ferro de Passar": "15",
-    },
-    "marca": {
-        "Midea": "1",
-        "Electrolux": "2",
-        "Brastemp": "3",
-        "Consul": "4",
-        "Panasonic": "5",
-        "Samsung": "6",
-        "LG": "7",
-        "Philco": "8",
-        "GE": "9",
-        "Whirlpool": "10",
-        "Mueller": "11",
-        "Cristalflex": "12",
-        "Gazin": "13",
     }
 }
+
+# Dicionário para mapeamento dinâmico de marcas
+marca_mapping = {}
+marca_counter = 1
 
 def limpar(texto):
     if not texto:
         return ""
     return re.sub(r'\s+', ' ', texto.strip())
+
+def get_marca_id(marca_nome):
+    """Retorna o ID da marca no formato 2000XXX"""
+    global marca_mapping, marca_counter
+    
+    if not marca_nome:
+        return "2000001"  # Default
+    
+    marca_upper = marca_nome.upper().strip()
+    
+    if marca_upper not in marca_mapping:
+        marca_mapping[marca_upper] = f"2000{marca_counter:03d}"
+        marca_counter += 1
+    
+    return marca_mapping[marca_upper]
 
 async def renderizar_html(url, wait_selectors=None, timeout_ms=30000):
     """Renderiza HTML com Playwright para conteúdo dinâmico"""
@@ -351,7 +355,7 @@ def extrair_produto(url):
     # --- Mapear IDs ---
     IDDepartamento = maps["departamento"].get(NomeDepartamento, "1")
     IDCategoria = maps["categoria"].get(NomeCategoria, "1")
-    IDMarca = maps["marca"].get(Marca, "1")
+    IDMarca = get_marca_id(Marca)
 
     # --- Gerar dados para CSV ---
     nome_limpo = re.sub(r'[^\w\s-]', '', nome).strip()
@@ -479,6 +483,7 @@ def main():
         print("\n📈 Estatísticas:")
         dept_counts = output_df['_NomeDepartamento'].value_counts()
         cat_counts = output_df['_NomeCategoria'].value_counts()
+        marca_counts = output_df['_Marca'].value_counts()
         
         print("\n🏢 Departamentos:")
         for dept, count in dept_counts.items():
@@ -487,6 +492,17 @@ def main():
         print("\n📂 Categorias:")
         for cat, count in cat_counts.items():
             print(f"   {cat}: {count}")
+        
+        print("\n🏷️ Marcas encontradas:")
+        for marca, count in marca_counts.items():
+            marca_id = get_marca_id(marca)
+            print(f"   {marca} (ID: {marca_id}): {count} produtos")
+        
+        print(f"\n📊 Total de marcas únicas: {len(marca_mapping)}")
+        print("📋 Mapeamento completo de marcas:")
+        for marca, marca_id in sorted(marca_mapping.items()):
+            count = marca_counts.get(marca, 0)
+            print(f"   {marca} → {marca_id} ({count} produtos)")
     
     else:
         print("❌ Nenhum produto foi processado com sucesso!")
