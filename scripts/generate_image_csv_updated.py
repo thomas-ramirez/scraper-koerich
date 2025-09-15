@@ -9,7 +9,7 @@ folder_path = Path.cwd() / 'data' / 'exports' / 'imagens_produtos'
 
 # Hash do commit usado nas URLs (atualizar quando necessário)
 commit_hash = "main"  # ou usar um hash específico se necessário
-base_url = f"https://raw.githubusercontent.com/thomas-ramirez/imagens-koerich/{commit_hash}/"
+base_url = f"https://raw.githubusercontent.com/thomas-ramirez/imagens-mcassab/{commit_hash}/"
 
 # Mapeamento de SKUIDs com letras para números
 # Vou usar números sequenciais começando de 9999999 para evitar conflitos
@@ -80,7 +80,7 @@ for skuid, images in skuid_images.items():
         rows.append([skuid, str(is_main), label, name, url])
 
 # ✅ Salvar o CSV na pasta exports
-csv_path = folder_path.parent / 'imagens_koerich.csv'
+csv_path = folder_path.parent / 'imagens_spicy.csv'
 with open(csv_path, mode='w', newline='', encoding='utf-8') as file:
     writer = csv.writer(file)
     writer.writerow(['_IDSKU', 'IsMain', 'Label', 'Name', 'url'])

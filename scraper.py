@@ -6,17 +6,19 @@ from urllib.parse import urljoin
 from datetime import datetime
 from pathlib import Path
 from requests.adapters import HTTPAdapter, Retry
-from contextlib import contextmanager
+try:
+    from tqdm import tqdm
+except Exception:
+    def tqdm(iterable=None, total=None, desc=None):
+        return iterable if iterable is not None else []
 
 try:
-    # Playwright é opcional; usado para páginas dinâmicas (ex.: Colcci)
     from playwright.sync_api import sync_playwright
 except Exception:
     sync_playwright = None
 
-downloads_path = str(Path.home() / "Downloads")
-current_dir = os.path.dirname(os.path.abspath(__file__))  # Pasta atual do script
-
+# === Configurações ===
+current_dir = os.path.dirname(os.path.abspath(__file__))
 input_csv = os.path.join(current_dir, "data", "csv", "produtos_link.csv")
 output_csv = os.path.join(current_dir, "data", "exports", "produtos_vtex.csv")
 output_folder = os.path.join(current_dir, "data", "exports", "imagens_produtos")
@@ -27,7 +29,7 @@ if "url" not in df_links.columns:
 
 os.makedirs(output_folder, exist_ok=True)
 
-# === Sessão HTTP robusta ===
+# === Sessão HTTP ===
 UA = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -38,84 +40,45 @@ UA = {
 }
 session = requests.Session()
 session.headers.update(UA)
-session.mount(
-    "https://",
-    HTTPAdapter(max_retries=Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])),
-)
+session.mount("https://", HTTPAdapter(max_retries=Retry(total=3, backoff_factor=0.5, status_forcelist=[429, 500, 502, 503, 504])))
 
-# === Mapeamentos VTEX (IDs) ===
+# === Mapeamentos VTEX ===
 maps = {
     "departamento": {
-        "Eletrodomésticos": "1",
-        "Eletroportáteis": "2", 
-        "Ar Condicionado": "3",
-        "Aquecimento": "4",
-        "Ventilação": "5",
-        "Refrigeração": "6",
-        "Lavagem": "7",
-        "Cozinha": "8",
-        "Limpeza": "9",
-        "Pequenos Eletrodomésticos": "10",
-        # Adicione mais conforme necessário
+        "Eletrodomésticos": "1", "Eletroportáteis": "2", "Ar Condicionado": "3",
+        "Aquecimento": "4", "Ventilação": "5", "Refrigeração": "6",
+        "Lavagem": "7", "Cozinha": "8", "Limpeza": "9", "Pequenos Eletrodomésticos": "10",
     },
     "categoria": {
-        "Frigobar": "1",
-        "Freezer": "2",
-        "Refrigerador": "3",
-        "Ar Condicionado": "4",
-        "Ventilador": "5",
-        "Aquecedor": "6",
-        "Máquina de Lavar": "7",
-        "Secadora": "8",
-        "Fogão": "9",
-        "Microondas": "10",
-        "Liquidificador": "11",
-        "Mixer": "12",
-        "Processador": "13",
-        "Aspirador": "14",
-        "Ferro de Passar": "15",
-        # Adicione mais conforme necessário
+        "Frigobar": "1", "Freezer": "2", "Refrigerador": "3", "Ar Condicionado": "4",
+        "Ventilador": "5", "Aquecedor": "6", "Máquina de Lavar": "7", "Secadora": "8",
+        "Fogão": "9", "Microondas": "10", "Liquidificador": "11", "Mixer": "12",
+        "Processador": "13", "Aspirador": "14", "Ferro de Passar": "15",
     }
 }
 
-# Mapeamento específico de marcas para Koerich
 marca_mapping = {
-    "BRASTEMP": "2000009",
-    "ELECTROLUX": "2000010", 
-    "MONDIAL": "2000011"
+    "BRASTEMP": "2000009", "ELECTROLUX": "2000010", "MONDIAL": "2000011"
 }
 
-# === Utils ===
-def limpar(t):
-    return re.sub(r"\s+", " ", (t or "").strip())
+# === Funções Utilitárias ===
+def limpar(texto):
+    return re.sub(r"\s+", " ", (texto or "").strip())
 
 def get_marca_id(marca_nome):
-    """Retorna o ID da marca específico para Koerich"""
     if not marca_nome:
-        return "2000009"  # Default Brastemp
-    
-    marca_upper = marca_nome.upper().strip()
-    return marca_mapping.get(marca_upper, "2000009")  # Default Brastemp
+        return "2000009"
+    return marca_mapping.get(marca_nome.upper().strip(), "2000009")
 
 def parse_preco(texto):
-    # 1ª ocorrência de R$ xxx,xx
     m = re.search(r"R\$\s*([\d\.\s]+,\d{2})", texto)
     if not m:
         return ""
-    br = m.group(1).replace(".", "").replace(" ", "").replace(",", ".")
     try:
+        br = m.group(1).replace(".", "").replace(" ", "").replace(",", ".")
         return f"{float(br):.2f}"
     except:
         return ""
-
-def get_next_data(soup):
-    tag = soup.find("script", id="__NEXT_DATA__", type="application/json")
-    if not tag:
-        return None
-    try:
-        return json.loads(tag.string)
-    except:
-        return None
 
 def get_jsonld(soup):
     for s in soup.find_all("script", type="application/ld+json"):
@@ -129,9 +92,16 @@ def get_jsonld(soup):
             continue
     return None
 
+def get_next_data(soup):
+    tag = soup.find("script", id="__NEXT_DATA__", type="application/json")
+    if tag:
+        try:
+            return json.loads(tag.string)
+        except:
+            pass
+    return None
+
 def parse_srcset(srcset):
-    # retorna a URL com maior resolução do srcset
-    # ex: "https://a.jpg 1x, https://b.jpg 2x" -> "https://b.jpg"
     if not srcset:
         return ""
     
@@ -144,158 +114,172 @@ def parse_srcset(srcset):
         if ' ' in part:
             url_part, density_part = part.rsplit(' ', 1)
             try:
-                # Remove 'x' e converte para float
                 density = float(density_part.replace('x', '').replace('w', ''))
                 if density > best_density:
                     best_density = density
                     best_url = url_part.strip()
             except:
-                # Se não conseguir parsear, usa a primeira URL
                 if not best_url:
                     best_url = url_part.strip()
     
     return best_url if best_url else parts[0].strip().split(" ")[0].strip()
 
-@contextmanager
-def _playwright_context():
+def renderizar_html(url, wait_selectors=None, timeout_ms=15000):
     if not sync_playwright:
-        raise RuntimeError("Playwright não está disponível. Instale com: pip install playwright e python -m playwright install chromium")
+        raise RuntimeError("Playwright não está disponível")
+    
+    wait_selectors = wait_selectors or []
     p = sync_playwright().start()
     try:
-        yield p
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        page.set_default_timeout(timeout_ms)
+        page.goto(url, wait_until="domcontentloaded")
+        
+        try:
+            page.wait_for_load_state("networkidle", timeout=timeout_ms)
+        except:
+            pass
+            
+        for sel in wait_selectors:
+            try:
+                page.wait_for_selector(sel, state="attached", timeout=4000)
+                break
+            except:
+                continue
+        return page.content()
     finally:
+        browser.close()
         p.stop()
 
-def renderizar_html(url, wait_selectors=None, timeout_ms=15000):
-    """Renderiza página via Chromium headless e retorna HTML.
-    wait_selectors: lista de seletores CSS a esperar (qualquer um).
-    """
-    wait_selectors = wait_selectors or []
-    with _playwright_context() as p:
-        browser = p.chromium.launch(headless=True)
-        try:
-            context = browser.new_context()
-            page = context.new_page()
-            page.set_default_timeout(timeout_ms)
-            page.goto(url, wait_until="domcontentloaded")
-            # tentar aguardar rede ociosa e algum seletor de conteúdo
-            try:
-                page.wait_for_load_state("networkidle", timeout=timeout_ms)
-            except Exception:
-                pass
-            for sel in wait_selectors:
-                try:
-                    page.wait_for_selector(sel, state="attached", timeout=4000)
-                    break
-                except Exception:
-                    continue
-            return page.content()
-        finally:
-            browser.close()
-
 def gerar_base_url_produto(sku, nome):
-    """Gera baseUrl único para cada produto baseado no SKU e nome"""
-    # Limpar nome para URL segura
     nome_limpo = re.sub(r'[^a-zA-Z0-9\s-]', '', nome).strip()
     nome_limpo = re.sub(r'\s+', '-', nome_limpo).lower()
-    
-    # Gerar baseUrl no formato: images-{leadPOC}-{sku}-{nome}
-    base_url = f"images-leadPOC-{sku}-{nome_limpo}"
-    return base_url
+    return f"images-leadPOC-{sku}-{nome_limpo}"
 
 def baixar_imagem(url_img, fname):
     try:
-        # Adicionar headers para tentar obter imagem em melhor qualidade
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': 'image/webp,image/apng,image/*,*/*;q=0.8',
             'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
             'Accept-Encoding': 'identity',
-            'Referer': 'https://www.koerich.com.br/',
+            'Referer': 'https://www.spicy.com.br/',
         }
         
         with session.get(url_img, headers=headers, stream=True, timeout=30) as resp:
             resp.raise_for_status()
             
-            # Verificar se é realmente uma imagem
             content_type = resp.headers.get('content-type', '')
             if not content_type.startswith('image/'):
-                print(f"⚠️ URL não é uma imagem: {content_type}")
                 return False
-            
-            # Verificar tamanho da imagem
-            content_length = resp.headers.get('content-length')
-            if content_length:
-                size_kb = int(content_length) / 1024
-                if size_kb < 1:  # Menos de 1KB, provavelmente thumbnail
-                    print(f"⚠️ Imagem muito pequena ({size_kb:.1f}KB), pode ser thumbnail")
             
             with open(os.path.join(output_folder, fname), "wb") as f:
                 for chunk in resp.iter_content(8192):
                     if chunk:
                         f.write(chunk)
         
-        # Verificar se o arquivo foi criado e tem tamanho mínimo
         file_path = os.path.join(output_folder, fname)
-        if os.path.exists(file_path):
-            file_size = os.path.getsize(file_path)
-            if file_size < 1024:  # Menos de 1KB
-                print(f"⚠️ Arquivo muito pequeno ({file_size} bytes): {fname}")
-                return False
-        
-        return True
-    except Exception as e:
-        print(f"⚠️ Erro ao baixar imagem {url_img}: {e}")
+        return os.path.exists(file_path) and os.path.getsize(file_path) >= 1024
+    except:
         return False
 
-# === Core ===
-def extrair_produto(url):
-    """Extrai dados de produto do site Koerich"""
-    try:
-        html = renderizar_html(
-            url,
-            wait_selectors=[
-                "h1", 
-                ".product-name",
-                ".product-price",
-                ".product-images",
-                ".about-product",
-                ".specifications"
-            ],
-            timeout_ms=30000,
-        )
-    except Exception as e:
-        print(f"⚠️ Erro com Playwright para {url}: {e}")
-        # fallback: tentar HTML não renderizado
-        r = session.get(url, timeout=20)
-        r.raise_for_status()
-        html = r.text
+def detectar_categoria_departamento(nome):
+    """Detecta categoria e departamento baseado no nome do produto"""
+    nome_lower = nome.lower()
     
-    soup = BeautifulSoup(html, "html.parser")
+    # Mapeamento direto de palavras-chave para departamento/categoria
+    mapeamento = {
+        "frigobar": ("Refrigeração", "Frigobar"),
+        "freezer": ("Refrigeração", "Freezer"),
+        "refrigerador": ("Refrigeração", "Refrigerador"),
+        "geladeira": ("Refrigeração", "Refrigerador"),
+        "ar condicionado": ("Ar Condicionado", "Ar Condicionado"),
+        "ar-condicionado": ("Ar Condicionado", "Ar Condicionado"),
+        "climatizador": ("Ar Condicionado", "Ar Condicionado"),
+        "ventilador": ("Ventilação", "Ventilador"),
+        "ventilação": ("Ventilação", "Ventilador"),
+        "ventilacao": ("Ventilação", "Ventilador"),
+        "aquecedor": ("Aquecimento", "Aquecedor"),
+        "aquecedores": ("Aquecimento", "Aquecedor"),
+        "máquina de lavar": ("Lavagem", "Máquina de Lavar"),
+        "maquina de lavar": ("Lavagem", "Máquina de Lavar"),
+        "lavadora": ("Lavagem", "Máquina de Lavar"),
+        "fogão": ("Cozinha", "Fogão"),
+        "fogao": ("Cozinha", "Fogão"),
+        "cooktop": ("Cozinha", "Fogão"),
+        "forno": ("Cozinha", "Fogão"),
+        "microondas": ("Cozinha", "Microondas"),
+        "liquidificador": ("Eletroportáteis", "Liquidificador"),
+        "mixer": ("Eletroportáteis", "Mixer"),
+        "processador": ("Eletroportáteis", "Processador"),
+        "aspirador": ("Limpeza", "Aspirador"),
+        "aspiradores": ("Limpeza", "Aspirador"),
+        "ferro de passar": ("Limpeza", "Ferro de Passar"),
+    }
+    
+    for palavra, (depto, cat) in mapeamento.items():
+        if palavra in nome_lower:
+            return depto, cat
+    
+    return "Eletrodomésticos", "Eletrodomésticos"
 
-    # --- JSON-LD (prioritário para nome/descrição/preço/imagens) ---
-    jsonld = get_jsonld(soup) or {}
-    nome = limpar(jsonld.get("name")) if jsonld else ""
-    descricao = limpar(jsonld.get("description")) if jsonld else ""
-    preco = ""
+def extrair_breadcrumb(soup):
+    """Extrai departamento e categoria do breadcrumb"""
+    category_div = soup.find("div", class_="category")
+    if not category_div:
+        return "", ""
+    
+    breadcrumb_ul = category_div.find("ul", id="breadcrumbTrail")
+    if not breadcrumb_ul:
+        return "", ""
+    
+    breadcrumb_items = breadcrumb_ul.find_all("li")
+    breadcrumb_names = []
+    
+    for item in breadcrumb_items:
+        link = item.find("a")
+        if link:
+            text = limpar(link.get_text())
+            if text:
+                breadcrumb_names.append(text)
+        else:
+            text = limpar(item.get_text())
+            if text and text.lower() not in ("você está em:", "you are in:"):
+                breadcrumb_names.append(text)
+    
+    # Filtrar breadcrumbs válidos
+    breadcrumb_names = [name for name in breadcrumb_names 
+                       if name and name.lower() not in ("início", "inicio", "home", "página inicial")]
+    
+    if len(breadcrumb_names) >= 3:
+        return breadcrumb_names[-3], breadcrumb_names[-2]
+    elif len(breadcrumb_names) == 2:
+        return breadcrumb_names[0], breadcrumb_names[1]
+    elif len(breadcrumb_names) == 1:
+        return "", breadcrumb_names[0]
+    
+    return "", ""
+
+def extrair_imagens(soup, url, sku):
+    """Extrai URLs de imagens do produto"""
     imgs = []
-
-    # Imagens do JSON-LD (string ou lista)
-    if isinstance(jsonld, dict) and jsonld.get("image"):
+    
+    # JSON-LD
+    jsonld = get_jsonld(soup)
+    if jsonld and jsonld.get("image"):
         if isinstance(jsonld["image"], list):
-            for img in jsonld["image"]:
-                if isinstance(img, str):
-                    imgs.append(img)
+            imgs.extend([img for img in jsonld["image"] if isinstance(img, str)])
         elif isinstance(jsonld["image"], str):
             imgs.append(jsonld["image"])
-
-    # --- __NEXT_DATA__ (Next.js) para imagens de alta e campos internos ---
+    
+    # __NEXT_DATA__
     nd = get_next_data(soup)
     if nd:
         def find_images(obj):
             found = []
             if isinstance(obj, dict):
-                # chaves comuns em projetos Next/VTEX
                 if "imageUrl" in obj and isinstance(obj["imageUrl"], str):
                     found.append(obj["imageUrl"])
                 if "images" in obj and isinstance(obj["images"], list):
@@ -308,267 +292,20 @@ def extrair_produto(url):
                 for v in obj:
                     found.extend(find_images(v))
             return found
-
-        next_images = find_images(nd)
-        imgs += next_images
-
-        # Nome (fallback a partir do Next)
-        if not nome:
-            try:
-                prod = nd["props"]["pageProps"]["product"]
-                for key in ("productName", "name", "title"):
-                    if prod.get(key):
-                        nome = limpar(prod[key])
-                        break
-            except Exception:
-                pass
-
-    # --- HTML Fallbacks (Koerich/MercadoCar) ---
-    # Nome do produto
-    if not nome:
-        for sel in [".product-name h1", "h1.product-name", "h1", ".product-title"]:
-            tag = soup.select_one(sel)
-            if tag and tag.get_text(strip=True):
-                nome = limpar(tag.get_text(strip=True))
-                break
-        if not nome:
-            nome = "Sem Nome"
-
-    # Preço: JSON-LD (offers.price) -> regex HTML
-    if not preco and isinstance(jsonld, dict):
-        offers = jsonld.get("offers") or {}
-        if isinstance(offers, dict) and offers.get("price"):
-            try:
-                preco = f"{float(str(offers['price']).replace(',', '.')):.2f}"
-            except:
-                pass
-    if not preco:
-        preco = parse_preco(soup.get_text(" ", strip=True))
-
-    # Descrição: classes específicas Koerich
-    if not descricao:
-        # Seção "Sobre o Produto"
-        about_section = soup.select_one(".about-product")
-        if about_section:
-            descricao = limpar(about_section.get_text(" ", strip=True))
-        
-        # Se não encontrou, procurar especificações
-        if not descricao:
-            specs_section = soup.select_one(".specifications")
-            if specs_section:
-                descricao = limpar(specs_section.get_text(" ", strip=True))
-        
-        # Fallback: procurar por classes genéricas de descrição
-        if not descricao:
-            for sel in [".product-description", ".description", ".product-details", ".product-info"]:
-                tag = soup.select_one(sel)
-                if tag and tag.get_text(strip=True):
-                    descricao = limpar(tag.get_text(" ", strip=True))
-                    break
-        
-
-
-    # --- Breadcrumb -> Departamento/Categoria ---
-    NomeDepartamento = ""
-    NomeCategoria = ""
+        imgs.extend(find_images(nd))
     
-    # Buscar especificamente na div .category do Koerich
-    category_div = soup.find("div", class_="category")
-    if category_div:
-        breadcrumb_ul = category_div.find("ul", id="breadcrumbTrail")
-        if breadcrumb_ul:
-            breadcrumb_items = breadcrumb_ul.find_all("li")
-            breadcrumb_names = []
-            
-            for item in breadcrumb_items:
-                # Procurar por links ou texto
-                link = item.find("a")
-                if link:
-                    text = limpar(link.get_text())
-                    if text:
-                        breadcrumb_names.append(text)
-                else:
-                    text = limpar(item.get_text())
-                    if text and text.lower() not in ("você está em:", "you are in:"):
-                        breadcrumb_names.append(text)
-            
-            # Filtrar breadcrumbs válidos (remover "Home", "Início", etc.)
-            breadcrumb_names = [name for name in breadcrumb_names if name and name.lower() not in ("início", "inicio", "home", "página inicial")]
-            
-            # Para Koerich, o último item é o nome do produto, não a categoria
-            # Pegar o penúltimo como categoria e o antepenúltimo como departamento
-            if len(breadcrumb_names) >= 3:
-                NomeDepartamento = breadcrumb_names[-3]  # Antepenúltimo item (ex: "Eletrodomésticos")
-                NomeCategoria = breadcrumb_names[-2]     # Penúltimo item (ex: "Fogão")
-            elif len(breadcrumb_names) == 2:
-                NomeDepartamento = breadcrumb_names[0]   # Primeiro item
-                NomeCategoria = breadcrumb_names[1]      # Segundo item
-            elif len(breadcrumb_names) == 1:
-                NomeCategoria = breadcrumb_names[0]
-
-    # --- Extrair variações de tamanho ---
-    tamanhos_disponiveis = []
-    
-    # Procurar por variações de cor ou voltagem
-    variacao_selectors = [
-        "select[name*='cor'] option",
-        "select[name*='voltagem'] option",
-        "select[name*='voltage'] option",
-        "[class*='cor'] option",
-        "[class*='voltagem'] option",
-        "input[name*='cor'][type='radio']",
-        "input[name*='voltagem'][type='radio']"
-    ]
-    
-    for selector in variacao_selectors:
-        options = soup.select(selector)
-        if options:
-            for opt in options:
-                variacao = opt.get_text(strip=True) or opt.get("value", "")
-                if variacao and variacao.lower() not in ("selecione", "select", "cor", "voltagem", "-"):
-                    tamanhos_disponiveis.append(variacao)
-            break
-    
-    # Se não encontrou variações, usar tamanho único
-    if not tamanhos_disponiveis:
-        tamanhos_disponiveis = ["ÚNICO"]
-
-    # Fallback: extrair categoria/departamento do nome do produto
-    if not NomeDepartamento or not NomeCategoria:
-        nome_lower = nome.lower()
-        
-        # Detectar departamento baseado no tipo de produto
-        if any(palavra in nome_lower for palavra in ["frigobar", "freezer", "refrigerador", "geladeira"]):
-            NomeDepartamento = "Refrigeração"
-        elif any(palavra in nome_lower for palavra in ["ar condicionado", "ar-condicionado", "climatizador"]):
-            NomeDepartamento = "Ar Condicionado"
-        elif any(palavra in nome_lower for palavra in ["ventilador", "ventilação", "ventilacao"]):
-            NomeDepartamento = "Ventilação"
-        elif any(palavra in nome_lower for palavra in ["aquecedor", "aquecedores"]):
-            NomeDepartamento = "Aquecimento"
-        elif any(palavra in nome_lower for palavra in ["máquina de lavar", "maquina de lavar", "lavadora"]):
-            NomeDepartamento = "Lavagem"
-        elif any(palavra in nome_lower for palavra in ["fogão", "fogao", "cooktop", "forno"]):
-            NomeDepartamento = "Cozinha"
-        elif any(palavra in nome_lower for palavra in ["aspirador", "aspiradores"]):
-            NomeDepartamento = "Limpeza"
-        else:
-            NomeDepartamento = "Eletrodomésticos"  # Default
-        
-        # Detectar categoria específica
-        if "frigobar" in nome_lower:
-            NomeCategoria = "Frigobar"
-        elif "freezer" in nome_lower:
-            NomeCategoria = "Freezer"
-        elif "refrigerador" in nome_lower or "geladeira" in nome_lower:
-            NomeCategoria = "Refrigerador"
-        elif "ar condicionado" in nome_lower or "ar-condicionado" in nome_lower:
-            NomeCategoria = "Ar Condicionado"
-        elif "ventilador" in nome_lower:
-            NomeCategoria = "Ventilador"
-        elif "aquecedor" in nome_lower:
-            NomeCategoria = "Aquecedor"
-        elif "máquina de lavar" in nome_lower or "maquina de lavar" in nome_lower:
-            NomeCategoria = "Máquina de Lavar"
-        elif "fogão" in nome_lower or "fogao" in nome_lower:
-            NomeCategoria = "Fogão"
-        elif "microondas" in nome_lower:
-            NomeCategoria = "Microondas"
-        elif "liquidificador" in nome_lower:
-            NomeCategoria = "Liquidificador"
-        elif "aspirador" in nome_lower:
-            NomeCategoria = "Aspirador"
-        else:
-            NomeCategoria = "Eletrodomésticos"  # Default
-
-    # SKU: reúne candidatos -> escolhe o 1º não vazio
-    sku_candidates = []
-    if isinstance(jsonld, dict) and jsonld.get("sku"):
-        sku_candidates.append(str(jsonld["sku"]))
-    if nd:
-        try:
-            prod_nd = nd["props"]["pageProps"]["product"]
-            for key in ("itemId", "sku", "id", "productId"):
-                v = prod_nd.get(key)
-                if v:
-                    sku_candidates.append(str(v))
-        except Exception:
-            pass
-    meta_sku = soup.find("meta", {"itemprop": "sku"})
-    if meta_sku and meta_sku.get("content"):
-        sku_candidates.append(meta_sku["content"].strip())
-    # último recurso: slug
-    sku_candidates.append(url.rstrip("/").split("/")[-1])
-    # Fallback adicional: extrair por rótulo "Ref." ou "Referência"
-    try:
-        full_txt = soup.get_text(" ", strip=True)
-        mref = re.search(r"(?:Ref\.?|Refer[eê]ncia)[:\s]+([A-Z0-9\-\.\/]+)", full_txt, flags=re.I)
-        if mref:
-            sku_candidates.insert(0, mref.group(1))
-    except Exception:
-        pass
-    sku = next((x for x in sku_candidates if x), "")
-
-    # --- Marca (JSON-LD -> HTML -> Nome do produto) ---
-    Marca = ""
-    if isinstance(jsonld, dict) and jsonld.get("brand"):
-        b = jsonld["brand"]
-        if isinstance(b, dict) and b.get("name"): 
-            Marca = limpar(b["name"])
-        elif isinstance(b, str): 
-            Marca = limpar(b)
-
-    if not Marca:
-        label = soup.find(string=lambda s: isinstance(s, str) and "Marca" in s)
-        if label:
-            cont = label.find_parent(["tr","li","p","div","dt","span"])
-            if cont:
-                dd = cont.find_next_sibling("dd")
-                if dd and dd.get_text(strip=True):
-                    Marca = limpar(dd.get_text(" ", strip=True))
-                else:
-                    txt = limpar(cont.get_text(" ", strip=True))
-                    m = re.search(r"Marca[:\-]\s*(.+)", txt, flags=re.I)
-                    if m: 
-                        Marca = limpar(m.group(1))
-
-    # Fallback: extrair marca do nome do produto
-    if not Marca:
-        nome_lower = nome.lower()
-        
-        # Detectar marcas específicas do Koerich
-        marcas_conhecidas = ["brastemp", "electrolux", "mondial"]
-        
-        for marca in marcas_conhecidas:
-            if marca in nome_lower:
-                Marca = marca.title()
-                break
-        
-        # Se não encontrou marca específica, usar Brastemp como padrão
-        if not Marca:
-            Marca = "Brastemp"
-
-    # --- IDs VTEX via mapeamento local ---
-    _IDDepartamento = maps["departamento"].get(NomeDepartamento, "")
-    _IDCategoria = maps["categoria"].get(NomeCategoria, "")
-    _IDMarca = get_marca_id(Marca)
-
-    # Imagens: captura de <img> e <source srcset> (típico em carrosséis)
-    # Procurar por imagens em carrosséis e galerias
+    # HTML - imagens
     for img in soup.select("img"):
         src = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or parse_srcset(img.get("srcset"))
         if src and "data:image" not in src and "blank" not in src.lower():
-            # Filtrar imagens que parecem ser do produto (contêm números ou extensões de imagem)
-            if any(ext in src.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']) and any(char.isdigit() for char in src):
-                # Remover parâmetros de redimensionamento para obter imagem original
+            if any(ext in src.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
                 clean_src = src.split('&')[0] if '&' in src else src
                 imgs.append(clean_src)
     
-    # <source srcset> para imagens responsivas - pegar a maior resolução
+    # HTML - source srcset
     for source in soup.select("source"):
         srcset = source.get("srcset")
         if srcset:
-            # Parse srcset para pegar a maior resolução
             srcset_parts = srcset.split(',')
             best_url = ""
             best_width = 0
@@ -587,20 +324,10 @@ def extrair_produto(url):
             
             if best_url and "data:image" not in best_url:
                 if any(ext in best_url.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
-                    # Remover parâmetros de redimensionamento
                     clean_url = best_url.split('&')[0] if '&' in best_url else best_url
                     imgs.append(clean_url)
     
-    # Se não encontrou imagens específicas, buscar todas as imagens
-    if not imgs:
-        for img in soup.select("img"):
-            src = img.get("src") or img.get("data-src") or img.get("data-lazy-src") or parse_srcset(img.get("srcset"))
-            if src and "data:image" not in src and "blank" not in src.lower():
-                # Remover parâmetros de redimensionamento
-                clean_src = src.split('&')[0] if '&' in src else src
-                imgs.append(clean_src)
-
-    # Dedup mantendo ordem + normaliza para URL absoluta
+    # Dedup e normalizar URLs
     seen, ordered = set(), []
     for u in imgs:
         u_abs = urljoin(url, u)
@@ -608,61 +335,178 @@ def extrair_produto(url):
             seen.add(u_abs)
             ordered.append(u_abs)
     
-    # Tentar obter URLs de imagens em alta qualidade
-    if ordered:
-        high_quality_imgs = []
-        for img_url in ordered:
-            # Tentar obter versão em alta qualidade
-            if "ccstore/v1/images/" in img_url:
-                # Remover parâmetros de redimensionamento
-                base_url = img_url.split('?')[0]
-                if 'source=' in img_url:
-                    # Extrair o caminho original da imagem
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(img_url)
-                    params = urllib.parse.parse_qs(parsed.query)
-                    if 'source' in params:
-                        source_path = params['source'][0]
-                        # Construir URL de alta qualidade
-                        high_quality_url = f"https://www.koerich.com.br{source_path}"
-                        high_quality_imgs.append(high_quality_url)
-                    else:
-                        high_quality_imgs.append(img_url)
-                else:
-                    high_quality_imgs.append(img_url)
-            else:
-                high_quality_imgs.append(img_url)
-        
-        # Usar as URLs de alta qualidade se encontradas
-        if high_quality_imgs:
-            ordered = high_quality_imgs
+    # Filtrar imagens do produto
+    imgs_produto = [img for img in ordered if sku in img or any(sku_part in img for sku_part in sku.split('-')[:2])]
     
-    # Filtrar apenas imagens do produto (que contenham o SKU)
-    imgs_produto = []
-    for img in ordered:
-        if sku in img or any(sku_part in img for sku_part in sku.split('-')[:2]):
-            imgs_produto.append(img)
-    
-    # Se não encontrou imagens específicas do produto, usar as primeiras 5
-    if not imgs_produto:
-        imgs_produto = ordered[:5]
-    
-    imgs = imgs_produto[:5]
+    return imgs_produto[:5] if imgs_produto else ordered[:5]
 
-    # Gerar baseUrl único para este produto
-    base_url_produto = gerar_base_url_produto(sku, nome)
+def extrair_produto(url):
+    """Extrai dados de produto de uma PDP VTEX (Spicy)."""
+    try:
+        html = renderizar_html(url, ["h1", ".product-name", ".product-price", ".product-images"], 30000)
+    except Exception as e:
+        print(f"⚠️ Erro com Playwright para {url}: {e}")
+        r = session.get(url, timeout=20)
+        r.raise_for_status()
+        html = r.text
     
-    # Baixa até 5 imagens
+    soup = BeautifulSoup(html, "html.parser")
+
+    # --- Extrair dados básicos ---
+    jsonld = get_jsonld(soup) or {}
+    nome = limpar(jsonld.get("name", ""))
+    descricao = limpar(jsonld.get("description", ""))
+    preco = ""
+    
+    # Preço do JSON-LD
+    if isinstance(jsonld, dict) and jsonld.get("offers"):
+        offers = jsonld["offers"]
+        if isinstance(offers, dict) and offers.get("price"):
+            try:
+                preco = f"{float(str(offers['price']).replace(',', '.')):.2f}"
+            except:
+                pass
+    
+    # Fallback para nome
+    if not nome:
+        for sel in [".product-name h1", "h1.product-name", "h1", ".product-title"]:
+            tag = soup.select_one(sel)
+            if tag and tag.get_text(strip=True):
+                nome = limpar(tag.get_text(strip=True))
+                break
+        if not nome:
+            nome = "Sem Nome"
+    
+    # Fallback para preço
+    if not preco:
+        preco = parse_preco(soup.get_text(" ", strip=True))
+    
+    # Fallback para descrição
+    if not descricao:
+        for sel in [".about-product", ".specifications", ".product-description", ".description"]:
+            tag = soup.select_one(sel)
+            if tag and tag.get_text(strip=True):
+                descricao = limpar(tag.get_text(" ", strip=True))
+                break
+    
+    # --- Categoria e Departamento ---
+    NomeDepartamento, NomeCategoria = "", ""
+    # 1) Tentar via __NEXT_DATA__ (VTEX)
+    if nd:
+        try:
+            # Estrutura comum em VTEX/Next.js
+            prod_nd = nd.get("props", {}).get("pageProps", {}).get("product")
+            if not prod_nd:
+                # Algumas lojas usam outra chave (ex: "productData")
+                prod_nd = nd.get("props", {}).get("pageProps", {}).get("productData")
+            if prod_nd:
+                # categoryTree: lista de níveis com {id, name, href}
+                cat_tree = prod_nd.get("categoryTree") or prod_nd.get("categories") or prod_nd.get("category")
+                if isinstance(cat_tree, list) and len(cat_tree) > 0:
+                    nomes = [limpar((c.get("name") if isinstance(c, dict) else str(c)) or "") for c in cat_tree]
+                    nomes = [n for n in nomes if n]
+                    if len(nomes) >= 2:
+                        NomeDepartamento, NomeCategoria = nomes[0], nomes[-1]
+                    elif len(nomes) == 1:
+                        NomeCategoria = nomes[0]
+        except:
+            pass
+    # 2) Fallback: breadcrumb no HTML
+    if not NomeDepartamento or not NomeCategoria:
+        NomeDepartamento, NomeCategoria = extrair_breadcrumb(soup)
+    # 3) Fallback: heurística pelo nome
+    if not NomeDepartamento or not NomeCategoria:
+        NomeDepartamento, NomeCategoria = detectar_categoria_departamento(nome)
+    
+    # --- SKU ---
+    sku_candidates = []
+    if isinstance(jsonld, dict) and jsonld.get("sku"):
+        sku_candidates.append(str(jsonld["sku"]))
+    
+    nd = get_next_data(soup)
+    if nd:
+        try:
+            prod_nd = nd["props"]["pageProps"]["product"]
+            for key in ("itemId", "sku", "id", "productId"):
+                v = prod_nd.get(key)
+                if v:
+                    sku_candidates.append(str(v))
+        except:
+            pass
+    
+    meta_sku = soup.find("meta", {"itemprop": "sku"})
+    if meta_sku and meta_sku.get("content"):
+        sku_candidates.append(meta_sku["content"].strip())
+    
+    sku_candidates.append(url.rstrip("/").split("/")[-1])
+    
+    # Buscar por referência no texto
+    try:
+        full_txt = soup.get_text(" ", strip=True)
+        mref = re.search(r"(?:Ref\.?|Refer[eê]ncia)[:\s]+([A-Z0-9\-\.\/]+)", full_txt, flags=re.I)
+        if mref:
+            sku_candidates.insert(0, mref.group(1))
+    except:
+        pass
+    
+    sku = next((x for x in sku_candidates if x), "")
+    
+    # --- Marca ---
+    Marca = ""
+    if isinstance(jsonld, dict) and jsonld.get("brand"):
+        b = jsonld["brand"]
+        if isinstance(b, dict) and b.get("name"): 
+            Marca = limpar(b["name"])
+        elif isinstance(b, str): 
+            Marca = limpar(b)
+    
+    if not Marca:
+        nome_lower = nome.lower()
+        for marca in ["wmf", "spicy", "brastemp", "electrolux", "mondial"]:
+            if marca in nome_lower:
+                Marca = marca.title()
+                break
+        if not Marca:
+            Marca = "Spicy"
+    
+    # --- Variações ---
+    tamanhos_disponiveis = []
+    variacao_selectors = [
+        "select[name*='cor'] option", "select[name*='voltagem'] option",
+        "input[name*='cor'][type='radio']", "input[name*='voltagem'][type='radio']"
+    ]
+    
+    for selector in variacao_selectors:
+        options = soup.select(selector)
+        if options:
+            for opt in options:
+                variacao = opt.get_text(strip=True) or opt.get("value", "")
+                if variacao and variacao.lower() not in ("selecione", "select", "cor", "voltagem", "-"):
+                    tamanhos_disponiveis.append(variacao)
+            break
+    
+    if not tamanhos_disponiveis:
+        tamanhos_disponiveis = ["ÚNICO"]
+    
+    # --- Imagens ---
+    imgs = extrair_imagens(soup, url, sku)
+    
+    # --- Baixar imagens ---
+    base_url_produto = gerar_base_url_produto(sku, nome)
     saved = []
     for i, u in enumerate(imgs, 1):
         fname = f"{sku}_{i}.jpg"
         if baixar_imagem(u, fname):
             saved.append(fname)
-
-    # Gerar múltiplas linhas para cada tamanho (SKU)
+    
+    # --- IDs VTEX ---
+    _IDDepartamento = maps["departamento"].get(NomeDepartamento, "")
+    _IDCategoria = maps["categoria"].get(NomeCategoria, "")
+    _IDMarca = get_marca_id(Marca)
+    
+    # --- Gerar produtos ---
     produtos = []
     for tamanho in tamanhos_disponiveis:
-        # SKU único para cada tamanho
         sku_tamanho = f"{sku}_{tamanho}" if tamanho != "ÚNICO" else sku
         nome_tamanho = f"{nome} - {tamanho}" if tamanho != "ÚNICO" else nome
         
@@ -682,11 +526,11 @@ def extrair_produto(url):
             "_ValorFidelidade": "",
             "_DataPrevisaoChegada": "",
             "_CodigoFabricante": "",
-            "_IDProduto": sku,  # ID do produto é o SKU base (sem tamanho)
-            "_NomeProduto": nome,  # Nome do produto sem tamanho
+            "_IDProduto": sku,
+            "_NomeProduto": nome,
             "_BreveDescricaoProduto": (descricao or "")[:200],
             "_ProdutoAtivo": "SIM",
-            "_CodigoReferenciaProduto": sku,  # Referência do produto é o SKU base
+            "_CodigoReferenciaProduto": sku,
             "_MostrarNoSite": "SIM",
             "_LinkTexto": url.rstrip("/").split("/")[-1],
             "_DescricaoProduto": descricao or "",
@@ -705,27 +549,26 @@ def extrair_produto(url):
             "_Marca": Marca,
             "_PesoCubico": "",
             "_Preço": preco,
-            "_BaseUrlImagens": base_url_produto,  # URL base para imagens do produto
+            "_BaseUrlImagens": base_url_produto,
             "_ImagensSalvas": ";".join(saved),
-            "_ImagensURLs": ";".join(imgs),  # útil para POST sku file sem baixar
+            "_ImagensURLs": ";".join(imgs),
         })
     
     return produtos
 
 # === Loop principal ===
 produtos = []
-for _, row in df_links.iterrows():
+for _, row in tqdm(df_links.iterrows(), total=len(df_links), desc="Processando URLs"):
     url = str(row["url"]).strip()
     if not url:
         continue
     try:
         resultado = extrair_produto(url)
-        # resultado pode ser uma lista (múltiplos SKUs) ou um dict (SKU único)
         if isinstance(resultado, list):
             produtos.extend(resultado)
         else:
             produtos.append(resultado)
-        time.sleep(0.5)  # cortesia para evitar 429
+        time.sleep(0.5)
     except Exception as e:
         print(f"❌ Erro ao processar {url}: {e}")
 
@@ -733,21 +576,13 @@ for _, row in df_links.iterrows():
 df_final = pd.DataFrame(produtos)
 df_final.to_csv(output_csv, index=False, encoding="utf-8-sig")
 
-# Mostrar estatísticas
+# Estatísticas
 print(f"\n✅ Planilha final salva: {output_csv}")
 print(f"🖼️ Imagens em: {output_folder}")
 
-# Estatísticas de marcas
 if len(produtos) > 0:
     marca_counts = df_final['_Marca'].value_counts()
-    
     print(f"\n🏷️ Marcas encontradas:")
     for marca, count in marca_counts.items():
         marca_id = get_marca_id(marca)
         print(f"   {marca} (ID: {marca_id}): {count} produtos")
-    
-    print(f"\n📊 Total de marcas únicas: {len(marca_mapping)}")
-    print("📋 Mapeamento de marcas Koerich:")
-    for marca, marca_id in sorted(marca_mapping.items()):
-        count = marca_counts.get(marca, 0)
-        print(f"   {marca} → {marca_id} ({count} produtos)")

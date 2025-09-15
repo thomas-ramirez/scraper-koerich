@@ -13,7 +13,7 @@ def upload_images_git():
     Faz upload das imagens usando Git
     """
     # Configurações
-    repo_url = "https://github.com/thomas-ramirez/imagens-koerich.git"
+    repo_url = "https://github.com/thomas-ramirez/imagens-mcassab.git"
     images_folder = Path.cwd() / 'data' / 'exports' / 'imagens_produtos'
     temp_repo = Path.cwd() / 'temp_imagens_repo'
     
@@ -51,7 +51,7 @@ def upload_images_git():
         
         print("💾 Fazendo commit...")
         subprocess.run([
-            'git', 'commit', '-m', f'Add {image_count} images from Koerich scraper'
+            'git', 'commit', '-m', f'Add {image_count} images from Spicy scraper'
         ], check=True)
         
         print("🚀 Fazendo push...")
@@ -60,7 +60,7 @@ def upload_images_git():
         print(f"\n🎉 Upload concluído com sucesso!")
         print(f"📊 Total de imagens enviadas: {image_count}")
         print(f"🔗 Repositório: {repo_url}")
-        print(f"🔗 URLs base: https://raw.githubusercontent.com/thomas-ramirez/imagens-koerich/main/")
+        print(f"🔗 URLs base: https://raw.githubusercontent.com/thomas-ramirez/imagens-mcassab/main/")
         
     except subprocess.CalledProcessError as e:
         print(f"❌ Erro no Git: {e}")
